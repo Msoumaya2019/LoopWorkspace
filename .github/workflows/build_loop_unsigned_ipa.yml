@@ -1,0 +1,51 @@
+name: Build Loop unsigned IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: Branch of LoopWorkspace to build
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - main
+
+jobs:
+  build:
+    runs-on: macos-26
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout LoopWorkspace and dependencies
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_branch }}
+          submodules: recursive
+
+      - name: Select Xcode
+        run: sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
+
+      - name: Install dependencies
+        run: bundle install --jobs 4 --retry 3
+
+      - name: Build unsigned archive
+        run: xcodebuild archive -workspace LoopWorkspace.xcworkspace -scheme LoopWorkspace -configuration Release -destination "generic/platform=iOS" -archivePath "$RUNNER_TEMP/Loop.xcarchive" DEVELOPMENT_TEAM=UNSIGNED LOOP_DEVELOPMENT_TEAM=UNSIGNED CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO PROVISIONING_PROFILE_SPECIFIER="" COMPILER_INDEX_STORE_ENABLE=NO -skipMacroValidation -skipPackagePluginValidation
+
+      - name: Create IPA
+        run: |
+          APP_PATH="$(find "$RUNNER_TEMP/Loop.xcarchive/Products/Applications" -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$APP_PATH"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/"
+          cd "$RUNNER_TEMP"
+          /usr/bin/zip --symlinks -r "Loop-${{ inputs.source_branch }}-unsigned.ipa" Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v6
+        with:
+          name: Loop-${{ inputs.source_branch }}-unsigned-IPA
+          path: ${{ runner.temp }}/Loop-${{ inputs.source_branch }}-unsigned.ipa
+          if-no-files-found: error
