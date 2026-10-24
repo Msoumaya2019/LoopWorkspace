@@ -43,6 +43,42 @@ jobs:
           cd "$RUNNER_TEMP"
           /usr/bin/zip --symlinks -r "Loop-${{ inputs.source_branch }}-unsigned.ipa" Payload
 
+      - name: Apply ESign App Group correction
+        env:
+          IPA_PATH: ${{ runner.temp }}/Loop-${{ inputs.source_branch }}-unsigned.ipa
+          APP_GROUP: group.85bacb6ce3d56ed1.1
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, plistlib, zipfile
+          ipa = pathlib.Path(os.environ['IPA_PATH'])
+          fixed = ipa.with_suffix('.fixed.ipa')
+          changed = []
+          with zipfile.ZipFile(ipa) as src, zipfile.ZipFile(fixed, 'w', compression=zipfile.ZIP_DEFLATED) as dst:
+              for entry in src.infolist():
+                  data = src.read(entry.filename)
+                  if entry.filename.endswith('/Info.plist'):
+                      info = plistlib.loads(data)
+                      if info.get('AppGroupIdentifier') == 'group.com.UNSIGNED.loopkit.LoopGroup':
+                          info['AppGroupIdentifier'] = os.environ['APP_GROUP']
+                          fmt = plistlib.FMT_BINARY if data.startswith(b'bplist00') else plistlib.FMT_XML
+                          data = plistlib.dumps(info, fmt=fmt, sort_keys=False)
+                          changed.append(entry.filename)
+                  dst.writestr(entry, data)
+          assert len(changed) == 4, changed
+          with zipfile.ZipFile(ipa) as src, zipfile.ZipFile(fixed) as dst:
+              assert src.namelist() == dst.namelist()
+              assert dst.testzip() is None
+              assert [n for n in src.namelist() if src.read(n) != dst.read(n)] == changed
+              for name in changed:
+                  before = plistlib.loads(src.read(name))
+                  after = plistlib.loads(dst.read(name))
+                  assert after.pop('AppGroupIdentifier') == os.environ['APP_GROUP']
+                  before.pop('AppGroupIdentifier')
+                  assert before == after
+          fixed.replace(ipa)
+          print('Verified App Group correction:', *changed, sep='\n')
+          PY
+
       - name: Upload IPA
         uses: actions/upload-artifact@v6
         with:
